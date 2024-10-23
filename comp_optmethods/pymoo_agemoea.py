@@ -13,7 +13,6 @@ from pymoo.optimize import minimize
 from pymoo.algorithms.moo.age import AGEMOEA
 
 import simple_graph
-import HiberniaGlobal_graph, Colt_graph, Funet_graph, Cogent_graph, Abvt_graph, Intellifiber_graph, DialtelecomCz_graph, TataNld_graph, Kdl_graph, Internode_graph, Missouri_graph, Ion_graph, Ntelos_graph, UsCarrier_graph, Palmetto_graph
 
 class ONOSControllerPlacement(ElementwiseProblem):
     def __init__(self, num_nodes, distance_matrix, shortest_paths, graph, **kwargs):
@@ -66,7 +65,7 @@ class ONOSControllerPlacement(ElementwiseProblem):
         # 2. The number of controlled switches for each controller should be <= limit_num_switches_controlled (limit_num_switches_controlled=int(math.ceil(num_nodes/num_controller)))
         # 3. return value should be the variance for all controller's betweenness centrality
         out["F"] = [f1, f2, f3, f4]
-        out["G"] = [g1, g2]
+        out["G"] = [g1,g2]
 
 
 def calculate_FST(num_nodes, controller_nodes, atomix_nodes, distance_matrix, shortest_paths):
@@ -77,7 +76,7 @@ def calculate_FST(num_nodes, controller_nodes, atomix_nodes, distance_matrix, sh
 
     if(num_controller == 0 or num_atomix ==0):
         return math.inf
-
+    
     # find the nearest controller for each switch
     controller_of = []
     for s in range(num_nodes):
@@ -96,48 +95,77 @@ def calculate_FST(num_nodes, controller_nodes, atomix_nodes, distance_matrix, sh
         for a in atomix_list:
             delay.append(distance_matrix[c][a])
         average_atomix_delay_from[c] = np.mean(delay)
-
+    
     # find the nearest atomix for each atomix and calculate average delay
-    atomix_atomix_delays = []
-    for a1 in atomix_list:
-        delay = math.inf
-        for a2 in atomix_list:
-            if(a1 == a2):
-                continue
-            if distance_matrix[a1][a2] < delay:
-                delay = distance_matrix[a1][a2]
-        atomix_atomix_delays.append(delay)
-    average_atomix_atomix_delay = np.mean(atomix_atomix_delays)
+    avr_min_a_to_ela_delays = []
+    if len(atomix_list) ==1: 
+        min_avr_atomix_atomix_delay = distance_matrix[atomix_list[0]][atomix_list[0]]
+    else: # only add the aveage dalay of math.ceil(num_atomix/2) parts
+        for a1 in atomix_list:
+            delay = math.inf
+            a_to_ela_delays = [] # the collection of delays from a1 to a2 (a1 != a2)
+            for a2 in atomix_list:
+                if(a1 == a2):
+                    continue
+                else:
+                    a_to_ela_delays.append(distance_matrix[a1][a2])
+            num_min_ack = num_atomix//2 # the limited number of Atomix follower nodes to ack the leader Atomix nodes
+            a_to_ela_delays = np.sort(a_to_ela_delays) # sort delay from lowest to highest
+            avr_min_a_to_ela_delays.append(np.mean(a_to_ela_delays[:num_min_ack])) # only need first num_atomix//2 delays
+        min_avr_atomix_atomix_delay = min(avr_min_a_to_ela_delays) # keep minimum delay
+
+    # calculate fst
     FTSs = []
     for source in range(num_nodes):
-        for distination in range(num_nodes):
-            if(source == distination):
+        for destination in range(num_nodes):
+            if source == destination:
                 continue
             delay = 0
             is_controlled_by_single_controller = True
-            counted_controllers = []
-            for s in shortest_paths[source][distination]:
+            is_controlled_by_same_middle_controller = True
+            added_middle_highest = False
+            for s in shortest_paths[source][destination]:
                 # switch-controller delay
                 delay += distance_matrix[s][controller_of[s]] * 4
 
                 # controller-atomix delay
-                if(s == source):
-                    delay += average_atomix_delay_from[controller_of[s]] * 2
-                elif(s != distination):
-                    if(controller_of[s] != controller_of[source]):
-                        is_controlled_by_single_controller = False
-                        if(not controller_of[s] in counted_controllers):
-                            counted_controllers.append(controller_of[s])
-                            delay += average_atomix_delay_from[controller_of[s]]
+                # remove the c-to-a delay of source switch
+                if len(average_atomix_delay_from) > 1:
+                    flt_dca_css = {k: v for k,v in average_atomix_delay_from.items() if k != controller_of[source]}
                 else:
-                    if(controller_of[s] == controller_of[source]):
-                        if(not is_controlled_by_single_controller):
-                            delay += average_atomix_delay_from[controller_of[s]]
+                    flt_dca_css = average_atomix_delay_from
+                c_of_dsmh = max(flt_dca_css, key=flt_dca_css.get) # highest c-to-a delay of swithes except source swith
+                c_of_dsml = min(flt_dca_css, key=flt_dca_css.get) # lowest c-to-a delay of swithes except source swith
+                flt_c_of_ss = [rest_c for rest_c in controller_of if rest_c != controller_of[source]] # remove controller of source switch from controller_of list
+                is_controlled_by_same_middle_controller = len(set(flt_c_of_ss)) == 1 # check whether all switches except source switch controlled by same controller
+                dss = average_atomix_delay_from[controller_of[source]] # c-to-a delay of source switch
+                dsmh = flt_dca_css[c_of_dsmh] # c-to-a highest delay of middle switches
+                dsml = flt_dca_css[c_of_dsml] # c-to-a lowest delay of middle switches
+                dsd = average_atomix_delay_from[controller_of[destination]] # c-to-a delay of destination switch
+                if s == source:
+                    delay += dss * 2
+                elif s != destination:
+                    if controller_of[s] != controller_of[source]:
+                        is_controlled_by_single_controller = False
+                        if dsmh > dss and not added_middle_highest:
+                            added_middle_highest = True
+                            delay += dsmh
+                else:
+                    if controller_of[destination] == controller_of[source]:
+                        if not is_controlled_by_single_controller:
+                            delay += dss
                     else:
-                        delay += average_atomix_delay_from[controller_of[s]] * 2
+                        if is_controlled_by_same_middle_controller:
+                            if dsd == dsmh:
+                                delay += (dsd + dss)
+                        else:
+                            if dsd == dsmh:
+                                delay += (dsd * 2 + dss)
+                            if dsd == dsml:
+                                delay += dsd
             
             # atomix-atomix delay
-            delay +=  average_atomix_atomix_delay * 2
+            delay +=  min_avr_atomix_atomix_delay * 3
             FTSs.append(delay)
 
     return np.mean(FTSs)
@@ -230,7 +258,7 @@ def parse_arg():
 def main():
     args = parse_arg()
 
-    # res = optimize(simple_graph.graph)
+    res = optimize(simple_graph.graph)
     # res = optimize(Cogent_graph.graph)
     # res = optimize(UsCarrier_graph.graph)
     # res = optimize(HiberniaGlobal_graph.graph)
@@ -245,12 +273,12 @@ def main():
     # res = optimize(Missouri_graph.graph)
     # res = optimize(Ion_graph.graph)
     # res = optimize(Ntelos_graph.graph) # with node id problem
-    res = optimize(Palmetto_graph.graph)
+    # res = optimize(Palmetto_graph.graph)
 
     F = res.F
     print(F[np.argsort(F[:, 0])])
 
-    # outputfile = 'res_bc_simple_agemoea.pkl'
+    outputfile = 'res_bc_simple_agemoea.pkl'
     # outputfile = 'res_bc_Cogent_agemoea.pkl'
     # outputfile = 'res_bc_UsCarrier_agemoea.pkl'
     # outputfile = 'res_bc_HiberniaGlobal_agemoea.pkl'
@@ -265,7 +293,7 @@ def main():
     # outputfile = 'res_bc_Missouri_agemoea.pkl'
     # outputfile = 'res_bc_Ion_agemoea.pkl'
     # outputfile = 'res_bc_Ntelos_agemoea.pkl'
-    outputfile = 'res_bc_Palmetto_agemoea.pkl'
+    # outputfile = 'res_bc_Palmetto_agemoea.pkl'
     
     if(args.prefix):
         outputfile = args.prefix + outputfile
