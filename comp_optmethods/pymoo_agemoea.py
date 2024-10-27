@@ -13,6 +13,7 @@ from pymoo.optimize import minimize
 from pymoo.algorithms.moo.age import AGEMOEA
 
 import simple_graph
+import HiberniaGlobal_graph, Colt_graph, Funet_graph, Cogent_graph, Abvt_graph, Intellifiber_graph, DialtelecomCz_graph, TataNld_graph, Kdl_graph, Internode_graph, Missouri_graph, Ion_graph, Ntelos_graph, UsCarrier_graph, Palmetto_graph
 
 class ONOSControllerPlacement(ElementwiseProblem):
     def __init__(self, num_nodes, distance_matrix, shortest_paths, graph, **kwargs):
@@ -97,22 +98,26 @@ def calculate_FST(num_nodes, controller_nodes, atomix_nodes, distance_matrix, sh
         average_atomix_delay_from[c] = np.mean(delay)
     
     # find the nearest atomix for each atomix and calculate average delay
-    avr_min_a_to_ela_delays = []
+    min_a_to_ela_delays = []
     if len(atomix_list) ==1: 
         min_avr_atomix_atomix_delay = distance_matrix[atomix_list[0]][atomix_list[0]]
-    else: # only add the aveage dalay of math.ceil(num_atomix/2) parts
+    else: # only add the aveage dalay of math.floor(num_atomix/2) parts
         for a1 in atomix_list:
             delay = math.inf
             a_to_ela_delays = [] # the collection of delays from a1 to a2 (a1 != a2)
+            sum_a_to_ela_delays = [] # dthe sum of top num_atomix//2 fast delays from a1 to a2 (a1 != a2)
             for a2 in atomix_list:
                 if(a1 == a2):
                     continue
                 else:
                     a_to_ela_delays.append(distance_matrix[a1][a2])
+                    
             num_min_ack = num_atomix//2 # the limited number of Atomix follower nodes to ack the leader Atomix nodes
             a_to_ela_delays = np.sort(a_to_ela_delays) # sort delay from lowest to highest
-            avr_min_a_to_ela_delays.append(np.mean(a_to_ela_delays[:num_min_ack])) # only need first num_atomix//2 delays
-        min_avr_atomix_atomix_delay = min(avr_min_a_to_ela_delays) # keep minimum delay
+            min_a_to_ela_delays = a_to_ela_delays[:num_min_ack] # only need first num_atomix//2 delays
+            sum_a_to_ela_delays.append(np.sum(min_a_to_ela_delays))
+                
+        min_avr_atomix_atomix_delay = np.mean(sum_a_to_ela_delays) # average all minimum delay
 
     # calculate fst
     FTSs = []
@@ -126,7 +131,7 @@ def calculate_FST(num_nodes, controller_nodes, atomix_nodes, distance_matrix, sh
             added_middle_highest = False
             for s in shortest_paths[source][destination]:
                 # switch-controller delay
-                delay += distance_matrix[s][controller_of[s]] * 4
+                delay += (distance_matrix[s][controller_of[s]] * 4)
 
                 # controller-atomix delay
                 # remove the c-to-a delay of source switch
@@ -142,30 +147,33 @@ def calculate_FST(num_nodes, controller_nodes, atomix_nodes, distance_matrix, sh
                 dsmh = flt_dca_css[c_of_dsmh] # c-to-a highest delay of middle switches
                 dsml = flt_dca_css[c_of_dsml] # c-to-a lowest delay of middle switches
                 dsd = average_atomix_delay_from[controller_of[destination]] # c-to-a delay of destination switch
-                if s == source:
-                    delay += dss * 2
-                elif s != destination:
+                if s == source: # c-to-a delay of source switch
+                    delay += (dss * 2)
+                elif s != destination: # c-to-a delay of middle switches
                     if controller_of[s] != controller_of[source]:
                         is_controlled_by_single_controller = False
                         if dsmh > dss and not added_middle_highest:
                             added_middle_highest = True
                             delay += dsmh
-                else:
+                else: # c-to-a delay of destination switch
                     if controller_of[destination] == controller_of[source]:
                         if not is_controlled_by_single_controller:
-                            delay += dss
+                            delay += dsd
                     else:
                         if is_controlled_by_same_middle_controller:
-                            if dsd == dsmh:
-                                delay += (dsd + dss)
+                            delay += dsd
                         else:
-                            if dsd == dsmh:
-                                delay += (dsd * 2 + dss)
-                            if dsd == dsml:
+                            # if dsd == dsmh:
+                            #     delay += (dsd * 2 + dss)
+                            # if dsd == dsml:
+                            #     delay += dsd
+                            if dsd <= dsml:
                                 delay += dsd
+                            else:
+                                delay += (dsd * 2)
             
             # atomix-atomix delay
-            delay +=  min_avr_atomix_atomix_delay * 3
+            delay +=  (min_avr_atomix_atomix_delay * 3)
             FTSs.append(delay)
 
     return np.mean(FTSs)
